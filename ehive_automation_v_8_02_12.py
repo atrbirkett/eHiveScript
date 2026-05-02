@@ -1056,7 +1056,7 @@ async def fill_related_acquisition_record(page, acq_number):
       4. Click OK → popup closes, relationship assigned
     """
     if not acq_number:
-        return
+        return False
 
     print(f"  → Setting Related Acquisition Record: {acq_number}")
 
@@ -1082,7 +1082,7 @@ async def fill_related_acquisition_record(page, acq_number):
         await asyncio.sleep(2.0)
     except Exception as e:
         print(f"  ⚠ Could not click Find Record: {e}")
-        return
+        return False
 
     # Step 3: Wait for the popup grid to render
     try:
@@ -1090,7 +1090,7 @@ async def fill_related_acquisition_record(page, acq_number):
         await asyncio.sleep(1.0)
     except Exception:
         print("  ⚠ Find Record popup grid did not appear")
-        return
+        return False
 
     # Use JS to find the matching row's acquisitionNumber cell element,
     # then use Playwright's .click() on it so GWT registers the selection.
@@ -1112,7 +1112,7 @@ async def fill_related_acquisition_record(page, acq_number):
             await asyncio.sleep(1.0)
         except Exception:
             pass
-        return
+        return False
 
     # Playwright click on the actual DOM element — this fires GWT events properly
     await cell_handle.as_element().click()
@@ -1135,6 +1135,7 @@ async def fill_related_acquisition_record(page, acq_number):
         await ok_btn.click()
         await asyncio.sleep(2.0)
         print(f"  → Acquisition record linked")
+        return True
     except Exception as e:
         print(f"  ⚠ Could not click OK on Find Record popup: {e}")
         # Try force-closing the popup
@@ -1144,6 +1145,7 @@ async def fill_related_acquisition_record(page, acq_number):
             await asyncio.sleep(1.0)
         except Exception:
             pass
+        return False
 
 
 # ─────────────────────────────────────────────
@@ -1227,7 +1229,8 @@ async def _fill_all_fields(page, row, cat_type, append):
     has_acq = await has_tab_fields(row, ACQUISITION_FIELDS, PROVENANCE_FIELDS, FUNDER_FIELDS) or acq_record_val
     if has_acq:
         await click_tab(page, "Acquisition")
-        await fill_related_acquisition_record(page, acq_record_val)
+        if await fill_related_acquisition_record(page, acq_record_val):
+            any_filled = True
         for field_key, field_info in ACQUISITION_FIELDS.items():
             value = val(row, field_key)
             if not value:
