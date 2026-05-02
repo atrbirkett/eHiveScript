@@ -64,6 +64,8 @@ CSV columns — Administration tab:
                         parts get a blank description.
 """
 
+import argparse
+import os
 import pandas as pd
 import asyncio
 import traceback
@@ -600,7 +602,7 @@ async def fill_text(page, dlf_id, value, append=False, label=None):
         elif append:
             existing = await element.input_value()
             if existing.strip():
-                value = existing.strip() + " " + value.strip()
+                value = existing.strip() + "\n" + value.strip()
             await element.fill(value)
         else:
             await element.fill(value)
@@ -967,25 +969,19 @@ async def fill_repeating_set(page, row, config, append=False):
 
     # Count existing sets
     existing_count = await fieldset_loc.locator(".x-border").count()
-    print(f"  → Found {existing_count} existing {legend} set(s)")
 
     if existing_count > 0 and not append:
-        # In replace mode for repeating sets, we fill the first set
         set_index = 0
-        print(f"  → Replace mode: will update set index {set_index}")
     else:
-        # In append mode (or if empty), add a new set
         if existing_count > 0:
             try:
                 add_btn_loc = fieldset_loc.locator("button.x-btn-text").filter(has_text=add_btn).last
                 await add_btn_loc.click()
                 await asyncio.sleep(1.0)
-                print(f"  → Added new {legend} set")
             except Exception as e:
                 print(f"  ⚠ Could not click Add Another Set for {legend}: {e}")
-                return
+                return False
         set_index = existing_count if existing_count > 0 else 0
-        print(f"  → Will fill set index {set_index}")
 
     # Fill each sub-field in the set
     for csv_key, field_info in fields.items():
@@ -998,44 +994,30 @@ async def fill_repeating_set(page, row, config, append=False):
             if ftype == "text":
                 selector = f"[id^='{dlf_id}'] input, [id^='{dlf_id}'] textarea"
                 elements = fieldset_loc.locator(selector)
-                element_count = await elements.count()
-                print(f"  → DEBUG: {csv_key} selector '{selector}' found {element_count} element(s), targeting index {set_index}")
-                
-                if element_count == 0:
-                    print(f"  ⚠ {legend}.{csv_key}: No elements found with selector")
+                if await elements.count() == 0:
+                    print(f"  ⚠ {legend}.{csv_key}: element not found")
                     continue
-                    
                 element = elements.nth(set_index)
-                # Wait for element to be visible and editable (longer timeout for collapsed fieldsets)
                 await element.wait_for(state="visible", timeout=15000)
                 await element.scroll_into_view_if_needed()
-                # Clear existing content first (important for replace mode)
                 await element.click()
-                await element.fill("", timeout=5000)  # Clear first
+                await element.fill("", timeout=5000)
                 await asyncio.sleep(0.2)
-                # Now fill with new value
                 await element.fill(value, timeout=5000)
-                print(f"  ✓ Filled {csv_key} = {value}")
+                print(f"  ✓ {csv_key}: {value[:80]}")
                 await asyncio.sleep(FIELD_DELAY)
             elif ftype == "combobox":
                 selector = f"[id^='{dlf_id}'] input"
                 elements = fieldset_loc.locator(selector)
-                element_count = await elements.count()
-                print(f"  → DEBUG: {csv_key} selector '{selector}' found {element_count} element(s), targeting index {set_index}")
-                
-                if element_count == 0:
-                    print(f"  ⚠ {legend}.{csv_key}: No elements found with selector")
+                if await elements.count() == 0:
+                    print(f"  ⚠ {legend}.{csv_key}: element not found")
                     continue
-                    
                 element = elements.nth(set_index)
-                # Wait for element to be visible and editable (longer timeout for collapsed fieldsets)
                 await element.wait_for(state="visible", timeout=15000)
                 await element.scroll_into_view_if_needed()
-                # Clear existing content (important for replace mode)
                 await element.click(timeout=5000)
-                await element.fill("", timeout=5000)  # Clear first
+                await element.fill("", timeout=5000)
                 await asyncio.sleep(0.3)
-                # Now type new value
                 await element.type(value, delay=50)
                 await asyncio.sleep(1.5)
                 try:
@@ -1043,7 +1025,7 @@ async def fill_repeating_set(page, row, config, append=False):
                     await suggestion.click(timeout=3000)
                 except Exception:
                     await page.keyboard.press("Tab")
-                print(f"  ✓ Filled {csv_key} = {value}")
+                print(f"  ✓ {csv_key}: {value[:80]}")
                 await asyncio.sleep(FIELD_DELAY)
         except Exception as e:
             print(f"  ⚠ {legend}.{csv_key}: {e}")
@@ -1165,51 +1147,38 @@ async def fill_related_acquisition_record(page, acq_number):
 
 
 # ─────────────────────────────────────────────
-# MAIN RECORD UPDATER
+# SHARED HELPERS
 # ─────────────────────────────────────────────
 
-async def update_record(page, row, append=False, cat_type_override=None):
-    """Navigate to a record's edit page and update fields from the CSV row."""
+async def _check_session(page):
+    """Return False if the browser has been redirected to the eHive login page."""
+    if "log-in" in page.url.lower():
+        print("\n" + "=" * 40)
+        print("  SESSION EXPIRED — you have been logged out of eHive.")
+        print("  The script cannot continue. Re-run and log in again.")
+        print("=" * 40)
+        return False
+    return True
 
-    object_url = val(row, "url")
-    if not object_url:
-        print("  ⚠ No URL found, skipping row")
-        return
 
-    edit_url = build_edit_url(object_url, ACCOUNT_ID)
-    print(f"→ Updating: {edit_url}")
+async def _save_record(page):
+    """Click Save, confirm the popup, and verify the page left the edit view."""
+    print("  → Saving...")
+    await page.locator("#publishDraftButtonTop button").click()
+    await page.wait_for_selector("#confirmPublishRecordButton", state="visible", timeout=15000)
+    await asyncio.sleep(1)
+    await page.locator("#confirmPublishRecordButton button").click(force=True)
+    await asyncio.sleep(1)
+    await page.wait_for_load_state("networkidle")
+    await asyncio.sleep(1.5)
+    if "/create/objects/" in page.url:
+        print("  ⚠ Still on edit page after save — eHive may have shown a validation error")
+        return False
+    return True
 
-    await page.goto(edit_url)
 
-    # Wait for the GWT app container to appear — this is present on every
-    # eHive edit page before the form fields render.
-    try:
-        await page.wait_for_selector("#gwt", timeout=30000)
-    except Exception:
-        print(f"  ✗ Page did not load (no #gwt container) — skipping")
-        return
-
-    # Now wait for at least one dlf_ field to appear, meaning the form has rendered.
-    # Use a generous timeout because GWT can be slow on first load.
-    try:
-        await page.wait_for_selector("[id^='dlf_']", timeout=40000)
-    except Exception:
-        print(f"  ✗ Form fields did not render — skipping")
-        return
-
-    # Extra settle time for the full form to finish rendering
-    await asyncio.sleep(2.0)
-
-    # ── Determine catalogue type ──────────────────────────────────────
-    # Priority: manual override → URL keyword → page heading
-    cat_type = cat_type_override or detect_catalogue_type(edit_url)
-    if not cat_type:
-        cat_type = await detect_catalogue_type_from_page(page)
-    if cat_type:
-        print(f"  Catalogue type: {cat_type}")
-    else:
-        print(f"  ⚠ Could not detect catalogue type — item_count/part fields will be skipped")
-
+async def _fill_all_fields(page, row, cat_type, append):
+    """Fill every field from a CSV row. Returns True if at least one field was written."""
     any_filled = False
 
     # ── Standard fields ───────────────────────────────────────────────
@@ -1233,27 +1202,27 @@ async def update_record(page, row, append=False, cat_type_override=None):
         if await fill_place_keywords(page, val(row, "field_collection_place_keywords"), append):
             any_filled = True
 
-    # ── Item Count fields (catalogue-type-specific) ───────────────────
+    # ── Item Count ────────────────────────────────────────────────────
     if cat_type:
         if await fill_item_count(page, cat_type, val(row, "item_count"), val(row, "item_count_notes"), append):
             any_filled = True
 
-    # ── Part ID / Part Description (catalogue-type-specific) ──────────
+    # ── Part ID / Part Description ────────────────────────────────────
     if cat_type:
         if await fill_parts(page, cat_type, val(row, "part_ids"), val(row, "part_descriptions"), append):
             any_filled = True
 
-    # ── Other Maker Contributor repeating set (Detail Fields tab) ─────
+    # ── Other Maker Contributor ───────────────────────────────────────
     if cat_type and cat_type in OTHER_MAKER_FIELDS:
         if await fill_repeating_set(page, row, OTHER_MAKER_FIELDS[cat_type], append):
             any_filled = True
 
-    # ── Other Number repeating set (Detail Fields tab) ────────────────
+    # ── Other Number ─────────────────────────────────────────────────
     if cat_type and cat_type in OTHER_NUMBER_FIELDS:
         if await fill_repeating_set(page, row, OTHER_NUMBER_FIELDS[cat_type], append):
             any_filled = True
 
-    # ── Acquisition tab fields ───────────────────────────────────────
+    # ── Acquisition tab ──────────────────────────────────────────────
     acq_record_val = val(row, "related_acquisition_record")
     has_acq = await has_tab_fields(row, ACQUISITION_FIELDS, PROVENANCE_FIELDS, FUNDER_FIELDS) or acq_record_val
     if has_acq:
@@ -1274,7 +1243,7 @@ async def update_record(page, row, append=False, cat_type_override=None):
         if await fill_repeating_set(page, row, FUNDER_FIELDS, append):
             any_filled = True
 
-    # ── Administration tab fields ────────────────────────────────────
+    # ── Administration tab ───────────────────────────────────────────
     if await has_tab_fields(row, ADMIN_FIELDS, RIGHTS_FIELDS, COMMENTS_FIELDS):
         await click_tab(page, "Administration")
         for field_key, field_info in ADMIN_FIELDS.items():
@@ -1292,20 +1261,61 @@ async def update_record(page, row, append=False, cat_type_override=None):
         if await fill_repeating_set(page, row, COMMENTS_FIELDS, append):
             any_filled = True
 
-    # ── Save ─────────────────────────────────────────────────────────
+    return any_filled
+
+
+# ─────────────────────────────────────────────
+# MAIN RECORD UPDATER
+# ─────────────────────────────────────────────
+
+async def update_record(page, row, append=False, cat_type_override=None):
+    """Navigate to a record's edit page and update fields from the CSV row.
+    Returns True on success (including skip), False on failure."""
+
+    object_url = val(row, "url")
+    if not object_url:
+        print("  ⚠ No URL found, skipping row")
+        return False
+
+    edit_url = build_edit_url(object_url, ACCOUNT_ID)
+    print(f"→ Updating: {edit_url}")
+
+    await page.goto(edit_url)
+
+    if not await _check_session(page):
+        raise RuntimeError("Session expired")
+
+    try:
+        await page.wait_for_selector("#gwt", timeout=30000)
+    except Exception:
+        print(f"  ✗ Page did not load (no #gwt container) — skipping")
+        return False
+
+    try:
+        await page.wait_for_selector("[id^='dlf_']", timeout=40000)
+    except Exception:
+        print(f"  ✗ Form fields did not render — skipping")
+        return False
+
+    await asyncio.sleep(2.0)
+
+    cat_type = cat_type_override or detect_catalogue_type(edit_url)
+    if not cat_type:
+        cat_type = await detect_catalogue_type_from_page(page)
+    print(f"  Catalogue type: {cat_type}" if cat_type else
+          "  ⚠ Could not detect catalogue type — item_count/part fields will be skipped")
+
+    any_filled = await _fill_all_fields(page, row, cat_type, append)
+
     if not any_filled:
         print("  ─ No fields to update — skipping save\n")
-        return
+        return True
 
-    print("  → Saving...")
-    await page.locator("#publishDraftButtonTop button").click()
-    await page.wait_for_selector("#confirmPublishRecordButton", state="visible", timeout=15000)
-    await asyncio.sleep(1)
-    await page.locator("#confirmPublishRecordButton button").click(force=True)
-    await asyncio.sleep(1)
-    await page.wait_for_load_state("networkidle")
-    await asyncio.sleep(1.5)
+    if not await _save_record(page):
+        return False
+
     print(f"  ✓ Saved\n")
+    return True
 
 
 async def create_record(page, row, template_view_url, cat_type_override=None):
@@ -1316,18 +1326,19 @@ async def create_record(page, row, template_view_url, cat_type_override=None):
     """
     print(f"→ Creating new record from template...")
 
-    # ── Navigate to the template view page ───────────────────────────
     await page.goto(template_view_url)
+
+    if not await _check_session(page):
+        raise RuntimeError("Session expired")
+
     try:
         await page.wait_for_selector("button.btn-create-similar-object", timeout=20000)
     except Exception:
         print(f"  ✗ Template view page did not load — skipping")
         return None
 
-    # ── Click "Create a similar record" ──────────────────────────────
     await page.locator("button.btn-create-similar-object").click()
 
-    # The form POSTs and redirects to the new record's edit page
     try:
         await page.wait_for_selector("#gwt", timeout=30000)
         await page.wait_for_selector("[id^='dlf_']", timeout=40000)
@@ -1336,105 +1347,19 @@ async def create_record(page, row, template_view_url, cat_type_override=None):
         return None
 
     await asyncio.sleep(2.0)
-
     new_edit_url = page.url
     print(f"  New record edit page: {new_edit_url}")
 
-    # ── Determine catalogue type ──────────────────────────────────────
     cat_type = cat_type_override or detect_catalogue_type(new_edit_url)
     if not cat_type:
         cat_type = await detect_catalogue_type_from_page(page)
-    if cat_type:
-        print(f"  Catalogue type: {cat_type}")
-    else:
-        print(f"  ⚠ Could not detect catalogue type — item_count/part fields will be skipped")
+    print(f"  Catalogue type: {cat_type}" if cat_type else
+          "  ⚠ Could not detect catalogue type — item_count/part fields will be skipped")
 
-    # ── Standard fields (always replace for new records) ─────────────
-    for field_key, field_info in get_fields(cat_type).items():
-        value = val(row, field_key)
-        if not value:
-            continue
-        if field_info["type"] == "text":
-            await fill_text(page, field_info["id"], value, append=False)
-        elif field_info["type"] == "combobox":
-            await fill_combobox(page, field_info["id"], value, append=False)
+    await _fill_all_fields(page, row, cat_type, append=False)
 
-    # ── Subject & Association Keywords ────────────────────────────────
-    await fill_keywords(page, val(row, "subject_keywords"), cat_type or "archaeology", append=False)
-
-    # ── Field Collection Place Keywords (Natural Science only) ────────
-    if cat_type == "naturalscience":
-        await fill_place_keywords(page, val(row, "field_collection_place_keywords"), append=False)
-
-    # ── Item Count ────────────────────────────────────────────────────
-    if cat_type:
-        await fill_item_count(
-            page, cat_type,
-            val(row, "item_count"),
-            val(row, "item_count_notes"),
-            append=False,
-        )
-
-    # ── Part ID / Part Description ────────────────────────────────────
-    if cat_type:
-        await fill_parts(
-            page, cat_type,
-            val(row, "part_ids"),
-            val(row, "part_descriptions"),
-            append=False,
-        )
-
-    # ── Other Maker Contributor repeating set (Detail Fields tab) ─────
-    if cat_type and cat_type in OTHER_MAKER_FIELDS:
-        await fill_repeating_set(page, row, OTHER_MAKER_FIELDS[cat_type], append=False)
-
-    # ── Other Number repeating set (Detail Fields tab) ────────────────
-    if cat_type and cat_type in OTHER_NUMBER_FIELDS:
-        await fill_repeating_set(page, row, OTHER_NUMBER_FIELDS[cat_type], append=False)
-
-    # ── Acquisition tab fields ───────────────────────────────────────
-    acq_record_val = val(row, "related_acquisition_record")
-    has_acq = await has_tab_fields(row, ACQUISITION_FIELDS, PROVENANCE_FIELDS, FUNDER_FIELDS) or acq_record_val
-    if has_acq:
-        await click_tab(page, "Acquisition")
-        await fill_related_acquisition_record(page, acq_record_val)
-        for field_key, field_info in ACQUISITION_FIELDS.items():
-            value = val(row, field_key)
-            if not value:
-                continue
-            if field_info["type"] == "text":
-                await fill_text(page, field_info["id"], value, append=False)
-            elif field_info["type"] == "combobox":
-                await fill_combobox(page, field_info["id"], value, append=False)
-        await fill_repeating_set(page, row, PROVENANCE_FIELDS, append=False)
-        await fill_repeating_set(page, row, FUNDER_FIELDS, append=False)
-
-    # ── Administration tab fields ────────────────────────────────────
-    if await has_tab_fields(row, ADMIN_FIELDS, RIGHTS_FIELDS, COMMENTS_FIELDS):
-        await click_tab(page, "Administration")
-        for field_key, field_info in ADMIN_FIELDS.items():
-            value = val(row, field_key)
-            if not value:
-                continue
-            if field_info["type"] == "text":
-                await fill_text(page, field_info["id"], value, append=False)
-            elif field_info["type"] == "combobox":
-                await fill_combobox(page, field_info["id"], value, append=False)
-        await fill_repeating_set(page, row, RIGHTS_FIELDS, append=False)
-        await fill_repeating_set(page, row, COMMENTS_FIELDS, append=False)
-
-    # ── Save ─────────────────────────────────────────────────────────
-    print("  → Clicking Save...")
-    await page.locator("#publishDraftButtonTop button").click()
-
-    print("  → Waiting for popup...")
-    await page.wait_for_selector("#confirmPublishRecordButton", state="visible", timeout=15000)
-    await asyncio.sleep(1)
-    print("  → Clicking OK on popup...")
-    await page.locator("#confirmPublishRecordButton button").click(force=True)
-    await asyncio.sleep(1)
-    await page.wait_for_load_state("networkidle")
-    await asyncio.sleep(1.5)
+    if not await _save_record(page):
+        return None
 
     saved_url = page.url
     print(f"  ✓ Created: {saved_url}\n")
@@ -1442,7 +1367,17 @@ async def create_record(page, row, template_view_url, cat_type_override=None):
 
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="eHive Record Updater")
+    parser.add_argument("--csv",        help="Path to CSV file (skips the CSV prompt)")
+    parser.add_argument("--account-id", default=ACCOUNT_ID, help="eHive account ID")
+    return parser.parse_args()
+
+
 async def main():
+    args = parse_args()
+    account_id_to_use = args.account_id
+
     # ── Mode ─────────────────────────────────────────────────────────
     print("=" * 40)
     print("  What would you like to do?")
@@ -1454,10 +1389,24 @@ async def main():
 
     # ── CSV path ──────────────────────────────────────────────────────
     print("=" * 40)
-    user_path = input("Enter CSV path (or press Enter to use default):\n> ").strip()
-    csv_path = user_path if user_path else CSV_PATH
-    print(f"\nLoading CSV: {csv_path}\n")
+    if args.csv:
+        csv_path = args.csv
+        print(f"CSV (from --csv): {csv_path}")
+    else:
+        user_path = input("Enter CSV path (or press Enter to use default):\n> ").strip()
+        csv_path = user_path if user_path else CSV_PATH
+    print(f"Loading CSV: {csv_path}\n")
     df = pd.read_csv(csv_path, dtype=str)
+
+    # ── Progress file — lives next to the CSV ─────────────────────────
+    progress_file = os.path.splitext(csv_path)[0] + ".completed.txt"
+    completed_urls = set()
+    if not is_create and os.path.exists(progress_file):
+        with open(progress_file) as f:
+            completed_urls = {line.strip() for line in f if line.strip()}
+        if completed_urls:
+            print(f"  Resuming: {len(completed_urls)} URL(s) already completed "
+                  f"(loaded from {os.path.basename(progress_file)})")
 
     # ── Template URL (create mode only) ──────────────────────────────
     template_view_url = None
@@ -1510,8 +1459,16 @@ async def main():
             print("=" * 40)
             input()
 
-            success, fail = 0, 0
+            success, skipped, fail = 0, 0, 0
             for idx, row in df.iterrows():
+                object_url = val(row, "url")
+
+                # ── Skip already-completed rows ───────────────────────
+                if not is_create and object_url in completed_urls:
+                    print(f"→ Skipping (already done): {object_url}")
+                    skipped += 1
+                    continue
+
                 try:
                     if is_create:
                         result = await create_record(
@@ -1523,34 +1480,43 @@ async def main():
                         else:
                             success += 1
                     else:
-                        await update_record(
+                        ok = await update_record(
                             page, row,
                             append=append,
                             cat_type_override=cat_type_override,
                         )
-                        success += 1
+                        if ok:
+                            success += 1
+                            if object_url:
+                                with open(progress_file, "a") as pf:
+                                    pf.write(object_url + "\n")
+                        else:
+                            fail += 1
+                except RuntimeError as e:
+                    # Session expiry raises RuntimeError — stop the run
+                    print(f"\n  ✗ Stopping: {e}")
+                    break
                 except Exception as e:
                     print(f"  ✗ Row {idx + 1} failed: {e}")
-                    print("  Full error traceback:")
                     traceback.print_exc()
                     print()
                     fail += 1
 
             print("=" * 40)
-            print(f"Done!   ✓ {success} {'created' if is_create else 'updated'}   ✗ {fail} failed")
+            print(f"Done!  ✓ {success} {'created' if is_create else 'updated'}"
+                  + (f"  ↷ {skipped} skipped" if skipped else "")
+                  + (f"  ✗ {fail} failed" if fail else ""))
             print("=" * 40)
-            
+
         except Exception as e:
             print("\n" + "=" * 40)
             print("CRITICAL ERROR - Something went wrong!")
             print("=" * 40)
             print(f"Error: {e}")
-            print("\nFull traceback:")
             traceback.print_exc()
             print("=" * 40)
-        
+
         finally:
-            # This ALWAYS runs, no matter what
             print("\n\nBrowser is still open. Press ENTER to close it...")
             input()
             await browser.close()
