@@ -77,6 +77,9 @@ CSV_PATH    = r"C:\Users\ab1426\OneDrive - University of Bristol\Desktop\ehive\o
 
 HEADLESS    = False
 FIELD_DELAY = 0.5
+
+# Put this value in any CSV cell to explicitly blank that field
+CLEAR = "CLEAR"
 # ─────────────────────────────────────────────
 
 # ─────────────────────────────────────────────
@@ -582,24 +585,32 @@ async def click_tab(page, tab_name):
 # FIELD FILLERS
 # ─────────────────────────────────────────────
 
-async def fill_text(page, dlf_id, value, append=False):
+async def fill_text(page, dlf_id, value, append=False, label=None):
     """Fill a plain text input or textarea using stable dlf_ ID."""
     if not value:
-        return
+        return False
+    is_clear = value == CLEAR
     try:
         selector = f"[id^='{dlf_id}'] input, [id^='{dlf_id}'] textarea"
         element = page.locator(selector).first
-        # Wait for element to be visible and scroll it into view
         await element.wait_for(state="visible", timeout=15000)
         await element.scroll_into_view_if_needed()
-        if append:
+        if is_clear:
+            await element.fill("")
+        elif append:
             existing = await element.input_value()
             if existing.strip():
                 value = existing.strip() + " " + value.strip()
-        await element.fill(value)
+            await element.fill(value)
+        else:
+            await element.fill(value)
+        tag = label or dlf_id
+        print(f"  ✓ {tag}: {'[cleared]' if is_clear else value[:80]}")
         await asyncio.sleep(FIELD_DELAY)
+        return True
     except Exception as e:
         print(f"  ⚠ fill {dlf_id}: {e}")
+        return False
 
 
 async def fill_text_by_exact_id(page, input_id, value):
@@ -614,31 +625,40 @@ async def fill_text_by_exact_id(page, input_id, value):
         print(f"  ⚠ fill exact id {input_id}: {e}")
 
 
-async def fill_combobox(page, dlf_id, value, append=False):
+async def fill_combobox(page, dlf_id, value, append=False, label=None):
     """Type into a GWT autocomplete combobox using stable dlf_ ID."""
     if not value:
-        return
+        return False
+    is_clear = value == CLEAR
     try:
         selector = f"[id^='{dlf_id}'] input"
         element = page.locator(selector).first
-        # Wait for element to be visible and scroll it into view
         await element.wait_for(state="visible", timeout=15000)
         await element.scroll_into_view_if_needed()
-        if not append:
+        if is_clear:
             await element.fill("")
             await asyncio.sleep(0.3)
-        await element.click()
-        await asyncio.sleep(0.3)
-        await element.type(value, delay=50)
-        await asyncio.sleep(1.5)
-        try:
-            suggestion = page.locator(".x-combo-list-item").first
-            await suggestion.click(timeout=3000)
-        except Exception:
             await page.keyboard.press("Tab")
+        else:
+            if not append:
+                await element.fill("")
+                await asyncio.sleep(0.3)
+            await element.click()
+            await asyncio.sleep(0.3)
+            await element.type(value, delay=50)
+            await asyncio.sleep(1.5)
+            try:
+                suggestion = page.locator(".x-combo-list-item").first
+                await suggestion.click(timeout=3000)
+            except Exception:
+                await page.keyboard.press("Tab")
+        tag = label or dlf_id
+        print(f"  ✓ {tag}: {'[cleared]' if is_clear else value[:80]}")
         await asyncio.sleep(FIELD_DELAY)
+        return True
     except Exception as e:
         print(f"  ⚠ combobox {dlf_id}: {e}")
+        return False
 
 
 async def fill_keywords(page, csv_value, cat_type, append=False):
@@ -652,7 +672,7 @@ async def fill_keywords(page, csv_value, cat_type, append=False):
     other repeating fieldsets on the same page.
     """
     if not csv_value:
-        return
+        return False
 
     cfg = KEYWORDS_CONFIG.get(cat_type, {"base_id": KEYWORDS_BASE_ID, "fieldset": KEYWORDS_FIELDSET})
     base_id = cfg["base_id"]
@@ -662,9 +682,21 @@ async def fill_keywords(page, csv_value, cat_type, append=False):
         has=page.locator("legend span.x-fieldset-header-text", has_text="Subject and Association Keywords")
     )
 
-    keywords = split_semi(csv_value)
-
     js = "Array.from(document.querySelectorAll('input[id^=\"" + base_id + "_\"]')).filter(i => i.value.trim() !== '').length"
+
+    if csv_value == CLEAR:
+        existing_count = await page.evaluate(js)
+        print(f"  ✓ subject_keywords: [cleared] ({existing_count} existing removed)")
+        for _ in range(existing_count):
+            try:
+                delete_btn = kw_fieldset.locator("button.x-btn-text").filter(has_text="Delete").first
+                await delete_btn.click()
+                await asyncio.sleep(0.5)
+            except Exception:
+                break
+        return True
+
+    keywords = split_semi(csv_value)
     existing_count = await page.evaluate(js)
 
     if append:
@@ -680,7 +712,7 @@ async def fill_keywords(page, csv_value, cat_type, append=False):
             except Exception:
                 break
         start_index = 0
-        print(f"  \u2192 Adding {len(keywords)} new keyword(s)")
+        print(f"  \u2713 subject_keywords: {csv_value[:80]}")
 
     for i, keyword in enumerate(keywords):
         line_num = start_index + i + 1
@@ -702,6 +734,7 @@ async def fill_keywords(page, csv_value, cat_type, append=False):
         except Exception:
             await page.keyboard.press("Tab")
         await asyncio.sleep(0.3)
+    return True
 
 
 async def fill_place_keywords(page, csv_value, append=False):
@@ -711,7 +744,7 @@ async def fill_place_keywords(page, csv_value, append=False):
     Semicolon-separated for multiple values, but typically a single entry.
     """
     if not csv_value:
-        return
+        return False
 
     kw_fieldset = page.locator("fieldset").filter(
         has=page.locator(
@@ -720,26 +753,34 @@ async def fill_place_keywords(page, csv_value, append=False):
         )
     )
 
-    # Check fieldset exists on this page
     try:
         count = await kw_fieldset.count()
         if count == 0:
             print(f"  ⚠ Field Collection Place Keywords fieldset not found — skipping")
-            return
+            return False
     except Exception:
-        return
+        return False
 
     base_id = NS_PLACE_KEYWORDS_BASE_ID
-    keywords = split_semi(csv_value)
-
     js = "Array.from(document.querySelectorAll('input[id^=\"" + base_id + "_\"]')).filter(i => i.value.trim() !== '').length"
     existing_count = await page.evaluate(js)
 
+    if csv_value == CLEAR:
+        print(f"  ✓ field_collection_place_keywords: [cleared] ({existing_count} existing removed)")
+        for _ in range(existing_count):
+            try:
+                delete_btn = kw_fieldset.locator("button.x-btn-text").filter(has_text="Delete").first
+                await delete_btn.click()
+                await asyncio.sleep(0.5)
+            except Exception:
+                break
+        return True
+
+    keywords = split_semi(csv_value)
+
     if append:
         start_index = existing_count
-        print(f"  → Appending {len(keywords)} place keyword(s)")
     else:
-        print(f"  → Deleting {existing_count} existing place keyword(s)...")
         for _ in range(existing_count):
             try:
                 delete_btn = kw_fieldset.locator("button.x-btn-text").filter(has_text="Delete").first
@@ -748,7 +789,7 @@ async def fill_place_keywords(page, csv_value, append=False):
             except Exception:
                 break
         start_index = 0
-        print(f"  → Adding {len(keywords)} place keyword(s)")
+        print(f"  ✓ field_collection_place_keywords: {csv_value[:80]}")
 
     for i, keyword in enumerate(keywords):
         line_num = start_index + i + 1
@@ -770,6 +811,7 @@ async def fill_place_keywords(page, csv_value, append=False):
         except Exception:
             await page.keyboard.press("Tab")
         await asyncio.sleep(0.3)
+    return True
 
 
 async def fill_item_count(page, cat_type, item_count_val, item_count_notes_val, append=False):
@@ -777,17 +819,16 @@ async def fill_item_count(page, cat_type, item_count_val, item_count_notes_val, 
     ids = ITEM_COUNT_IDS.get(cat_type)
     if not ids:
         print(f"  ⚠ item_count: unknown catalogue type '{cat_type}', skipping")
-        return
+        return False
 
+    filled = False
     if item_count_val:
-        print(f"  → Item Count: {item_count_val}")
-        # Item Count uses a special direct input id pattern (e.g. dlf_302050128_70_XX_0-input)
-        # We use a broad [id^=] selector so it catches whichever variant is on the page
-        await fill_text(page, ids["item_count"], item_count_val, append=False)
-
+        if await fill_text(page, ids["item_count"], item_count_val, append=False, label="item_count"):
+            filled = True
     if item_count_notes_val:
-        print(f"  → Item Count Notes")
-        await fill_text(page, ids["item_count_notes"], item_count_notes_val, append)
+        if await fill_text(page, ids["item_count_notes"], item_count_notes_val, append, label="item_count_notes"):
+            filled = True
+    return filled
 
 
 async def fill_parts(page, cat_type, part_ids_val, part_descs_val, append=False):
@@ -799,33 +840,20 @@ async def fill_parts(page, cat_type, part_ids_val, part_descs_val, append=False)
     append=True   — adds new rows after existing ones
     """
     if not part_ids_val:
-        return
+        return False
 
     cfg = PART_FIELDS.get(cat_type)
     if not cfg:
         print(f"  ⚠ part_ids: catalogue type '{cat_type}' has no Part Holdings section — skipping")
-        return
-
-    part_ids   = split_semi(part_ids_val)
-    part_descs = split_semi(part_descs_val) if part_descs_val else []
-    # Pad descriptions to match number of IDs
-    while len(part_descs) < len(part_ids):
-        part_descs.append("")
+        return False
 
     legend     = cfg["fieldset_legend"]
-    add_btn    = cfg["add_button"]
     del_btn    = cfg["delete_button"]
-    id_dlf     = cfg["part_id_dlf"]
-    desc_dlf   = cfg["part_desc_dlf"]
-
-    # Locate the fieldset by its legend text
     fieldset_locator = page.locator("fieldset").filter(has_text=legend)
 
-    # Count existing rows (border-wrapped sub-divs inside the fieldset)
-    existing_count = await fieldset_locator.locator(".x-border").count()
-
-    if not append:
-        print(f"  → Deleting {existing_count} existing part row(s)...")
+    if part_ids_val == CLEAR:
+        existing_count = await fieldset_locator.locator(".x-border").count()
+        print(f"  ✓ part_ids: [cleared] ({existing_count} existing rows removed)")
         for _ in range(existing_count):
             try:
                 delete_btn_loc = fieldset_locator.locator("button.x-btn-text").filter(has_text=del_btn).first
@@ -833,21 +861,40 @@ async def fill_parts(page, cat_type, part_ids_val, part_descs_val, append=False)
                 await asyncio.sleep(0.6)
             except Exception:
                 break
-        # After deletion there is still 1 empty row — recount
+        return True
+
+    add_btn  = cfg["add_button"]
+    id_dlf   = cfg["part_id_dlf"]
+    desc_dlf = cfg["part_desc_dlf"]
+
+    part_ids   = split_semi(part_ids_val)
+    part_descs = split_semi(part_descs_val) if part_descs_val else []
+    while len(part_descs) < len(part_ids):
+        part_descs.append("")
+
+    # Count existing rows (border-wrapped sub-divs inside the fieldset)
+    existing_count = await fieldset_locator.locator(".x-border").count()
+
+    if not append:
+        for _ in range(existing_count):
+            try:
+                delete_btn_loc = fieldset_locator.locator("button.x-btn-text").filter(has_text=del_btn).first
+                await delete_btn_loc.click()
+                await asyncio.sleep(0.6)
+            except Exception:
+                break
         existing_count = 0
 
-    print(f"  → Adding {len(part_ids)} part row(s) ({'append' if append else 'replace'})")
+    print(f"  ✓ part_ids: {part_ids_val[:80]}")
 
     for i, (pid, pdesc) in enumerate(zip(part_ids, part_descs)):
-        row_num = existing_count + i  # 0-based index inside the fieldset
+        row_num = existing_count + i
 
-        # Add a new row for every entry after the first (first row is already present)
         if row_num > 0:
             add_btn_loc = fieldset_locator.locator("button.x-btn-text").filter(has_text=add_btn).last
             await add_btn_loc.click()
             await asyncio.sleep(0.8)
 
-        # Fill Part ID — nth() selects the correct row inside the fieldset
         id_input = fieldset_locator.locator(f"[id^='{id_dlf}'] input").nth(row_num)
         try:
             await id_input.fill(pid)
@@ -855,7 +902,6 @@ async def fill_parts(page, cat_type, part_ids_val, part_descs_val, append=False)
         except Exception as e:
             print(f"  ⚠ part_id row {row_num}: {e}")
 
-        # Fill Part Description (if the catalogue type has one)
         if desc_dlf and pdesc:
             desc_input = fieldset_locator.locator(f"[id^='{desc_dlf}'] input, [id^='{desc_dlf}'] textarea").nth(row_num)
             try:
@@ -865,6 +911,7 @@ async def fill_parts(page, cat_type, part_ids_val, part_descs_val, append=False)
                 print(f"  ⚠ part_desc row {row_num}: {e}")
 
     await asyncio.sleep(FIELD_DELAY)
+    return True
 
 
 async def fill_repeating_set(page, row, config, append=False):
@@ -883,7 +930,7 @@ async def fill_repeating_set(page, row, config, append=False):
     # Check if any CSV values are provided for this set
     values = {k: val(row, k) for k in fields}
     if not any(values.values()):
-        return
+        return False
 
     print(f"  → Filling {legend} repeating set")
 
@@ -1000,6 +1047,7 @@ async def fill_repeating_set(page, row, config, append=False):
                 await asyncio.sleep(FIELD_DELAY)
         except Exception as e:
             print(f"  ⚠ {legend}.{csv_key}: {e}")
+    return True
 
 
 async def has_tab_fields(row, field_dict, *repeating_configs):
@@ -1162,95 +1210,97 @@ async def update_record(page, row, append=False, cat_type_override=None):
     else:
         print(f"  ⚠ Could not detect catalogue type — item_count/part fields will be skipped")
 
+    any_filled = False
+
     # ── Standard fields ───────────────────────────────────────────────
     for field_key, field_info in get_fields(cat_type).items():
         value = val(row, field_key)
         if not value:
             continue
         if field_info["type"] == "text":
-            await fill_text(page, field_info["id"], value, append)
+            if await fill_text(page, field_info["id"], value, append, label=field_key):
+                any_filled = True
         elif field_info["type"] == "combobox":
-            await fill_combobox(page, field_info["id"], value, append)
+            if await fill_combobox(page, field_info["id"], value, append, label=field_key):
+                any_filled = True
 
     # ── Subject & Association Keywords ────────────────────────────────
-    await fill_keywords(page, val(row, "subject_keywords"), cat_type or "archaeology", append)
+    if await fill_keywords(page, val(row, "subject_keywords"), cat_type or "archaeology", append):
+        any_filled = True
 
     # ── Field Collection Place Keywords (Natural Science only) ────────
     if cat_type == "naturalscience":
-        await fill_place_keywords(page, val(row, "field_collection_place_keywords"), append)
+        if await fill_place_keywords(page, val(row, "field_collection_place_keywords"), append):
+            any_filled = True
 
     # ── Item Count fields (catalogue-type-specific) ───────────────────
     if cat_type:
-        await fill_item_count(
-            page, cat_type,
-            val(row, "item_count"),
-            val(row, "item_count_notes"),
-            append,
-        )
+        if await fill_item_count(page, cat_type, val(row, "item_count"), val(row, "item_count_notes"), append):
+            any_filled = True
 
     # ── Part ID / Part Description (catalogue-type-specific) ──────────
     if cat_type:
-        await fill_parts(
-            page, cat_type,
-            val(row, "part_ids"),
-            val(row, "part_descriptions"),
-            append,
-        )
+        if await fill_parts(page, cat_type, val(row, "part_ids"), val(row, "part_descriptions"), append):
+            any_filled = True
 
     # ── Other Maker Contributor repeating set (Detail Fields tab) ─────
     if cat_type and cat_type in OTHER_MAKER_FIELDS:
-        await fill_repeating_set(page, row, OTHER_MAKER_FIELDS[cat_type], append)
+        if await fill_repeating_set(page, row, OTHER_MAKER_FIELDS[cat_type], append):
+            any_filled = True
 
     # ── Other Number repeating set (Detail Fields tab) ────────────────
     if cat_type and cat_type in OTHER_NUMBER_FIELDS:
-        await fill_repeating_set(page, row, OTHER_NUMBER_FIELDS[cat_type], append)
+        if await fill_repeating_set(page, row, OTHER_NUMBER_FIELDS[cat_type], append):
+            any_filled = True
 
     # ── Acquisition tab fields ───────────────────────────────────────
     acq_record_val = val(row, "related_acquisition_record")
     has_acq = await has_tab_fields(row, ACQUISITION_FIELDS, PROVENANCE_FIELDS, FUNDER_FIELDS) or acq_record_val
     if has_acq:
         await click_tab(page, "Acquisition")
-        # Related Acquisition Record (special popup workflow)
         await fill_related_acquisition_record(page, acq_record_val)
-        # Simple fields
         for field_key, field_info in ACQUISITION_FIELDS.items():
             value = val(row, field_key)
             if not value:
                 continue
             if field_info["type"] == "text":
-                await fill_text(page, field_info["id"], value, append)
+                if await fill_text(page, field_info["id"], value, append, label=field_key):
+                    any_filled = True
             elif field_info["type"] == "combobox":
-                await fill_combobox(page, field_info["id"], value, append)
-        # Provenance repeating set
-        await fill_repeating_set(page, row, PROVENANCE_FIELDS, append)
-        # Funder repeating set
-        await fill_repeating_set(page, row, FUNDER_FIELDS, append)
+                if await fill_combobox(page, field_info["id"], value, append, label=field_key):
+                    any_filled = True
+        if await fill_repeating_set(page, row, PROVENANCE_FIELDS, append):
+            any_filled = True
+        if await fill_repeating_set(page, row, FUNDER_FIELDS, append):
+            any_filled = True
 
     # ── Administration tab fields ────────────────────────────────────
     if await has_tab_fields(row, ADMIN_FIELDS, RIGHTS_FIELDS, COMMENTS_FIELDS):
         await click_tab(page, "Administration")
-        # Simple fields
         for field_key, field_info in ADMIN_FIELDS.items():
             value = val(row, field_key)
             if not value:
                 continue
             if field_info["type"] == "text":
-                await fill_text(page, field_info["id"], value, append)
+                if await fill_text(page, field_info["id"], value, append, label=field_key):
+                    any_filled = True
             elif field_info["type"] == "combobox":
-                await fill_combobox(page, field_info["id"], value, append)
-        # Rights repeating set
-        await fill_repeating_set(page, row, RIGHTS_FIELDS, append)
-        # Comments repeating set
-        await fill_repeating_set(page, row, COMMENTS_FIELDS, append)
+                if await fill_combobox(page, field_info["id"], value, append, label=field_key):
+                    any_filled = True
+        if await fill_repeating_set(page, row, RIGHTS_FIELDS, append):
+            any_filled = True
+        if await fill_repeating_set(page, row, COMMENTS_FIELDS, append):
+            any_filled = True
 
     # ── Save ─────────────────────────────────────────────────────────
-    print("  → Clicking Save...")
-    await page.locator("#publishDraftButtonTop button").click()
+    if not any_filled:
+        print("  ─ No fields to update — skipping save\n")
+        return
 
-    print("  → Waiting for popup...")
+    print("  → Saving...")
+    await page.locator("#publishDraftButtonTop button").click()
     await page.wait_for_selector("#confirmPublishRecordButton", state="visible", timeout=15000)
     await asyncio.sleep(1)
-    print("  → Clicking OK on popup...")
     await page.locator("#confirmPublishRecordButton button").click(force=True)
     await asyncio.sleep(1)
     await page.wait_for_load_state("networkidle")
