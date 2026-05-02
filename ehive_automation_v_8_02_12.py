@@ -1463,6 +1463,9 @@ async def main():
             input()
 
             success, skipped, fail = 0, 0, 0
+            total = len(df)
+            pending = total - len(completed_urls)
+            current = 0
             for idx, row in df.iterrows():
                 object_url = val(row, "url")
 
@@ -1472,6 +1475,8 @@ async def main():
                     skipped += 1
                     continue
 
+                current += 1
+                print(f"─── Record {current} of {pending} ───")
                 try:
                     if is_create:
                         result = await create_record(
