@@ -84,7 +84,7 @@ FIELD_DELAY = 0.5
 # Fields are keyed by catalogue type where IDs differ.
 # ─────────────────────────────────────────────
 
-# Archaeology / Archive / Photography fields (shared structure)
+# Archaeology fields (dlf_302050... prefix, sections _66–_76)
 FIELDS = {
     # Basic Object Details
     "object_number":            {"type": "text",     "id": "dlf_302050100_66"},
@@ -120,9 +120,9 @@ FIELDS = {
     "general_notes":            {"type": "text",     "id": "dlf_302050157_76"},
 }
 
-# Archive fields (uses _302040..._54/55/etc pattern - extracted from actual Archive HTML)
+# Archive fields (dlf_302040... prefix, sections _54–_64)
 ARCHIVE_FIELDS = {
-    # Basic Object Details  
+    # Basic Object Details
     "object_number":            {"type": "text",     "id": "dlf_302040100_54"},
     "accession_date":           {"type": "text",     "id": "dlf_302040101_54"},
     "name_title":               {"type": "text",     "id": "dlf_302040102_54"},
@@ -130,15 +130,13 @@ ARCHIVE_FIELDS = {
     "brief_description":        {"type": "text",     "id": "dlf_302040110_54"},
     "public_description":       {"type": "text",     "id": "dlf_302040111_54"},
     # Production
-    "date_made":                {"type": "text",     "id": "dlf_302040114_55"},  # This is in a repeating set
+    "date_made":                {"type": "text",     "id": "dlf_302040114_55"},
     "period":                   {"type": "combobox", "id": "dlf_500201316_55"},
     "production_notes":         {"type": "text",     "id": "dlf_500200604_55"},
     # Location
     "current_location":         {"type": "combobox", "id": "dlf_302040118_56"},
     "location_notes":           {"type": "text",     "id": "dlf_302040119_56"},
-    # Parts
-    "item_count":               {"type": "text",     "id": "dlf_302040120_57"},
-    "item_count_notes":         {"type": "text",     "id": "dlf_302040121_57"},
+    # item_count / item_count_notes are handled by fill_item_count() — not listed here
     # Physical Details
     "medium_and_materials":     {"type": "text",     "id": "dlf_302040125_58"},
     "physical_characteristics": {"type": "text",     "id": "dlf_302040126_58"},
@@ -151,6 +149,35 @@ ARCHIVE_FIELDS = {
     "general_notes":            {"type": "text",     "id": "dlf_302040148_63"},
     "catalogued_date":          {"type": "text",     "id": "dlf_302040150_64"},
     "cataloguer":               {"type": "combobox", "id": "dlf_302040149_64"},
+}
+
+# Photography and Multimedia fields (dlf_302030... prefix, sections _29–_40)
+# Verified against HTML snapshot. No Field Collection section in Photography.
+PHOTOGRAPHY_FIELDS = {
+    # Basic Object Details
+    "object_number":            {"type": "text",     "id": "dlf_302030100_29"},
+    "accession_date":           {"type": "text",     "id": "dlf_302030101_29"},
+    "name_title":               {"type": "text",     "id": "dlf_302030102_29"},
+    "collection_type":          {"type": "combobox", "id": "dlf_302030105_29"},
+    "classification":           {"type": "combobox", "id": "dlf_302030106_29"},
+    "object_type":              {"type": "combobox", "id": "dlf_302030107_29"},
+    "brief_description":        {"type": "text",     "id": "dlf_302030109_29"},
+    "public_description":       {"type": "text",     "id": "dlf_302030110_29"},
+    # Production
+    "date_made":                {"type": "text",     "id": "dlf_302030113_30"},
+    "period":                   {"type": "combobox", "id": "dlf_500200281_30"},
+    "production_notes":         {"type": "text",     "id": "dlf_500200605_30"},
+    # Location
+    "current_location":         {"type": "combobox", "id": "dlf_302030117_31"},
+    "location_notes":           {"type": "text",     "id": "dlf_302030118_31"},
+    # Physical Details
+    "medium_materials":         {"type": "text",     "id": "dlf_302030124_33"},
+    "physical_characteristics": {"type": "text",     "id": "dlf_302030125_33"},
+    "inscription_marks":        {"type": "text",     "id": "dlf_302030128_33"},
+    # Measurements
+    "measurements":             {"type": "text",     "id": "dlf_302030131_34"},
+    # General Notes
+    "general_notes":            {"type": "text",     "id": "dlf_302030152_39"},
 }
 
 # Natural Science — full field set with its own dlf_ IDs
@@ -211,7 +238,9 @@ def get_fields(cat_type):
         return NS_FIELDS
     elif cat_type == "archive":
         return ARCHIVE_FIELDS
-    return FIELDS
+    elif cat_type == "photography":
+        return PHOTOGRAPHY_FIELDS
+    return FIELDS  # archaeology (default)
 
 # ─────────────────────────────────────────────
 # ACQUISITION TAB FIELDS (dlf_302080... prefix)
@@ -305,14 +334,44 @@ COMMENTS_FIELDS = {
 # so they use fill_repeating_set() rather than the simple field loop.
 # ─────────────────────────────────────────────
 
-# Other Maker Contributor repeating set
+# Other Maker Contributor repeating set — keyed by catalogue type
+# All types share the fieldset legend "Other Maker Contributor" but have different dlf_ IDs.
 OTHER_MAKER_FIELDS = {
-    "fieldset_legend": "Other Maker Contributor",
-    "add_button":      "Add Another Set",
-    "delete_button":   "Delete Set",
-    "fields": {
-        "other_maker":      {"type": "combobox", "id": "dlf_302050150_75"},
-        "other_maker_role": {"type": "combobox", "id": "dlf_302050151_75"},
+    "archaeology": {
+        "fieldset_legend": "Other Maker Contributor",
+        "add_button":      "Add Another Set",
+        "delete_button":   "Delete Set",
+        "fields": {
+            "other_maker":      {"type": "combobox", "id": "dlf_302050150_75"},
+            "other_maker_role": {"type": "combobox", "id": "dlf_302050151_75"},
+        },
+    },
+    "archive": {
+        "fieldset_legend": "Other Maker Contributor",
+        "add_button":      "Add Another Set",
+        "delete_button":   "Delete Set",
+        "fields": {
+            "other_maker":      {"type": "combobox", "id": "dlf_302040141_62"},
+            "other_maker_role": {"type": "combobox", "id": "dlf_302040142_62"},
+        },
+    },
+    "photography": {
+        "fieldset_legend": "Other Maker Contributor",
+        "add_button":      "Add Another Set",
+        "delete_button":   "Delete Set",
+        "fields": {
+            "other_maker":      {"type": "combobox", "id": "dlf_302030145_38"},
+            "other_maker_role": {"type": "combobox", "id": "dlf_302030146_38"},
+        },
+    },
+    "naturalscience": {
+        "fieldset_legend": "Other Maker Contributor",
+        "add_button":      "Add Another Set",
+        "delete_button":   "Delete Set",
+        "fields": {
+            "other_maker":      {"type": "combobox", "id": "dlf_302070149_13"},
+            "other_maker_role": {"type": "combobox", "id": "dlf_302070150_13"},
+        },
     },
 }
 
@@ -342,8 +401,8 @@ OTHER_NUMBER_FIELDS = {
         "add_button":      "Add Another Set",
         "delete_button":   "Delete Set",
         "fields": {
-            "other_number":      {"type": "text",     "id": "dlf_500200252_75"},
-            "other_number_type": {"type": "combobox", "id": "dlf_500200251_75"},
+            "other_number":      {"type": "text",     "id": "dlf_302030150_38"},
+            "other_number_type": {"type": "combobox", "id": "dlf_302030151_38"},
         },
     },
     "naturalscience": {
@@ -402,14 +461,7 @@ PART_FIELDS = {
         "add_button":      "Add Another Set",
         "delete_button":   "Delete Set",
     },
-    # Natural Science uses "Part Holdings" (same structure as Archaeology)
-    "naturalscience": {
-        "part_id_dlf":    "dlf_500200250_70",  # reused across cat types
-        "part_desc_dlf":  None,
-        "fieldset_legend": "Part Holdings",
-        "add_button":      "Add Another Set",
-        "delete_button":   "Delete Set",
-    },
+    # Natural Science has no Part Holdings section — omitted intentionally.
 }
 
 # Subject & Association Keywords field IDs — keyed by catalogue type
@@ -751,7 +803,7 @@ async def fill_parts(page, cat_type, part_ids_val, part_descs_val, append=False)
 
     cfg = PART_FIELDS.get(cat_type)
     if not cfg:
-        print(f"  ⚠ part_ids: unknown catalogue type '{cat_type}', skipping")
+        print(f"  ⚠ part_ids: catalogue type '{cat_type}' has no Part Holdings section — skipping")
         return
 
     part_ids   = split_semi(part_ids_val)
@@ -1146,7 +1198,8 @@ async def update_record(page, row, append=False, cat_type_override=None):
         )
 
     # ── Other Maker Contributor repeating set (Detail Fields tab) ─────
-    await fill_repeating_set(page, row, OTHER_MAKER_FIELDS, append)
+    if cat_type and cat_type in OTHER_MAKER_FIELDS:
+        await fill_repeating_set(page, row, OTHER_MAKER_FIELDS[cat_type], append)
 
     # ── Other Number repeating set (Detail Fields tab) ────────────────
     if cat_type and cat_type in OTHER_NUMBER_FIELDS:
@@ -1282,7 +1335,8 @@ async def create_record(page, row, template_view_url, cat_type_override=None):
         )
 
     # ── Other Maker Contributor repeating set (Detail Fields tab) ─────
-    await fill_repeating_set(page, row, OTHER_MAKER_FIELDS, append=False)
+    if cat_type and cat_type in OTHER_MAKER_FIELDS:
+        await fill_repeating_set(page, row, OTHER_MAKER_FIELDS[cat_type], append=False)
 
     # ── Other Number repeating set (Detail Fields tab) ────────────────
     if cat_type and cat_type in OTHER_NUMBER_FIELDS:
